@@ -840,6 +840,10 @@ class FeiShuChanel(ChatChannel):
         )
         if not feishu_msg:
             return
+        # Namespace open_id by the actual configured application, including
+        # websocket events whose payload does not repeat app_id.
+        feishu_msg.identity_app_id = self.feishu_app_id or event.get("app_id", "")
+        feishu_msg.identity_owner_open_id = self.cfg("feishu_owner_open_id") or ""
 
         if feishu_msg.ctype == ContextType.TEXT and feishu_msg.content.strip().lower() == "/tasks":
             if not self._send_scheduler_card(feishu_msg, is_group, receive_id_type):

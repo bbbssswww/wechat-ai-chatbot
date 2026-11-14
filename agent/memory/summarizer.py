@@ -26,6 +26,7 @@ SUMMARIZE_SYSTEM_PROMPT_ZH = """你是一个对话记录助手。请将对话内
 - 合并同一件事的多轮对话
 - 只记录有意义的事件，忽略闲聊和问候
 - 保留关键的决策、结论和待办事项
+- 存在平台发言人署名时，保留 sender_id 与发言归属，不得把多人观点合并成当前用户的偏好；无署名的旧消息身份未知
 
 当对话没有任何记录价值（仅含问候或无意义内容），直接回复"无"。"""
 
@@ -38,6 +39,7 @@ Summarize by "event", not turn by turn:
 - Merge multiple turns about the same thing
 - Only record meaningful events; ignore small talk and greetings
 - Keep key decisions, conclusions and to-dos
+- Preserve platform sender_id labels and attribution; never merge multiple speakers' preferences into the current user. Old unlabeled messages have unknown authors.
 
 If the conversation has no record value (only greetings or meaningless content), reply with exactly "None"."""
 

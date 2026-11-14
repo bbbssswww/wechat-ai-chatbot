@@ -79,6 +79,7 @@ available_setting = {
     "group_name_keyword_white_list": [],  # group-name keywords where auto-reply is enabled
     "group_chat_in_one_session": ["group1"],  # group names that share conversation context
     "group_shared_session": False,  # whether group chat shares conversation context (all members share). When False each user has an independent session in the group
+    "feishu_owner_open_id": "",  # explicit owner binding; empty means no Feishu sender is the owner
     "nick_name_black_list": [],  # user nickname blacklist
     "group_welcome_msg": "",  # fixed welcome message for new group members; uses a random style when empty
     "trigger_by_self": False,  # whether the bot can be triggered by itself

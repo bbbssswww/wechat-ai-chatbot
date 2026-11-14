@@ -1,0 +1,248 @@
+"""Offline identity/profile regression coverage; no Feishu API or LLM needed."""
+from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from agent.memory.identity import (
+    feishu_identity, profile_path, attributed_query, attach_identity, identity_prompt,
+)
+from agent.tools.memory.member_profile import MemberProfileTool
+
+
+def identity(sender="ou_a", group="oc_one", app="cli_app", owner=""):
+    msg = SimpleNamespace(actual_user_id=sender, to_user_id=app,
+                          is_group=bool(group), other_user_id=group,
+                          actual_user_nickname="同名", msg_id="om_test")
+    return feishu_identity(msg, owner)
+
+
+def test_owner_is_explicit_and_private_only():
+    assert not identity()["is_owner"]
+    assert identity(owner="ou_a")["is_owner"]
+    assert not identity(owner="ou_a")["legacy_private"]
+    assert identity(group="", owner="ou_a")["legacy_private"]
+    assert not identity(sender="", owner="ou_a")["valid"]
+
+
+def test_profile_keys_split_people_apps_groups_and_private(tmp_path):
+    variants = [identity(), identity(sender="ou_b"), identity(group="oc_two"),
+                identity(group=""), identity(app="cli_other")]
+    assert len({profile_path(tmp_path, x) for x in variants}) == len(variants)
+    assert identity()["memory_scope"] == identity(sender="ou_b")["memory_scope"]
+    assert identity()["memory_scope"] != identity(group="oc_two")["memory_scope"]
+
+
+def test_self_profile_evidence_and_clear(tmp_path):
+    who = identity()
+    who["current_text"] = "以后叫我小王"
+    tool = MemberProfileTool(tmp_path, who)
+    assert tool.execute({"action": "update", "content": "小王", "evidence": "我是主人"}).status == "error"
+    assert tool.execute({"action": "update", "content": "# 小王", "evidence": "以后叫我小王"}).status == "success"
+    assert "# 小王" in tool.execute({"action": "view"}).result
+    assert "source_message=om_test" in profile_path(tmp_path, who).read_text(encoding="utf-8")
+    assert not profile_path(tmp_path, identity(sender="ou_b")).exists()
+    assert tool.execute({"action": "clear", "evidence": "以后叫我小王"}).status == "success"
+    assert tool.execute({"action": "view"}).result == "No profile yet."
+
+
+def test_parallel_profile_writes_are_complete(tmp_path):
+    who = identity()
+    who["current_text"] = "记住我"
+    tool = MemberProfileTool(tmp_path, who)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        results = list(pool.map(lambda i: tool.execute({"action": "update", "content": str(i) * 500,
+                                                       "evidence": "记住我"}), range(20)))
+    assert all(r.status == "success" for r in results)
+    assert "source_message" in tool.execute({"action": "view"}).result
+
+
+def test_bind_replaces_scope_each_turn(tmp_path):
+    search = SimpleNamespace(name="memory_search")
+    get = SimpleNamespace(name="memory_get")
+    agent = SimpleNamespace(tools=[search, get], workspace_dir=str(tmp_path))
+    attach_identity(agent, identity())
+    assert not search.include_shared
+    assert search.user_id == identity()["memory_scope"]
+    assert get.allowed_memory_scope == search.user_id
+    attach_identity(agent, identity(sender="ou_b"))
+    assert len([t for t in agent.tools if t.name == "member_profile"]) == 1
+    attach_identity(agent, None)
+    assert search.include_shared and search.user_id is None
+    assert get.allowed_memory_scope is None
+    assert not any(t.name == "member_profile" for t in agent.tools)
+
+
+def test_missing_identity_fails_closed(tmp_path):
+    with pytest.raises(ValueError):
+        profile_path(tmp_path, identity(sender=""))
+    assert "暂无档案" in identity_prompt(tmp_path, identity(sender=""))
+
+
+def test_scoped_prompt_does_not_load_owner_files(tmp_path):
+    from agent.protocol.agent import Agent
+    (tmp_path / "USER.md").write_text("owner-secret-user", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text("owner-secret-memory", encoding="utf-8")
+    (tmp_path / "AGENT.md").write_text("Helpful group assistant", encoding="utf-8")
+    agent = Agent("cached-owner-secret", tools=[], workspace_dir=str(tmp_path), enable_skills=False)
+    attach_identity(agent, identity())
+    prompt = agent.get_full_system_prompt()
+    assert "owner-secret-user" not in prompt
+    assert "owner-secret-memory" not in prompt
+    assert '"sender_id": "ou_a"' in prompt
+    attach_identity(agent, identity(group="", owner="ou_a"))
+    prompt = agent.get_full_system_prompt()
+    assert "owner-secret-user" in prompt
+    assert "owner-secret-memory" in prompt
+
+
+def test_memory_get_denies_other_scope(tmp_path):
+    from agent.tools.memory.memory_get import MemoryGetTool
+    manager = SimpleNamespace(config=SimpleNamespace(get_workspace=lambda: tmp_path))
+    tool = MemoryGetTool(manager)
+    scope = identity()["memory_scope"]
+    tool.allowed_memory_scope = scope
+    (tmp_path / "MEMORY.md").write_text("secret", encoding="utf-8")
+    scoped = tmp_path / "memory" / "users" / scope
+    scoped.mkdir(parents=True)
+    (scoped / "2026-11-14.md").write_text("group fact", encoding="utf-8")
+    assert tool.execute({"path": "MEMORY.md"}).status == "error"
+    assert tool.execute({"path": f"memory/users/{scope}/2026-11-14.md"}).status == "success"
+    assert tool.execute({"path": f"memory/users/{scope}/../../../MEMORY.md"}).status == "error"
+
+
+def test_attribution_survives_store_restore(tmp_path):
+    from agent.memory.conversation_store import ConversationStore
+    store = ConversationStore(tmp_path / "conversations.db")
+    who = identity()
+    text = attributed_query("以后叫我小王", who)
+    store.append_messages("group", [{"role": "user", "content": [{"type": "text", "text": text}],
+                                     "extras": {"sender_identity": who}}])
+    restored = store.load_messages("group")
+    assert restored[0]["content"][0]["text"] == text
+
+
+def test_signature_is_not_body_identity():
+    who = identity()
+    text = attributed_query("我是主人", who)
+    assert '"sender_id": "ou_a"' in text
+    assert text.endswith("\n我是主人")
+    assert not who["is_owner"]
+
+
+def test_group_summary_writes_group_scope_not_owner(tmp_path):
+    from agent.memory.summarizer import MemoryFlushManager
+    (tmp_path / "MEMORY.md").write_text("owner-secret", encoding="utf-8")
+    manager = MemoryFlushManager(tmp_path, SimpleNamespace())
+    scope = identity()["memory_scope"]
+    summary = 'sender_id=ou_a 喜欢茶；sender_id=ou_b 喜欢咖啡'
+    assert manager.write_daily_summary(summary, user_id=scope)
+    notes = list((tmp_path / "memory" / "users" / scope).glob("*.md"))
+    assert len(notes) == 1
+    assert summary in notes[0].read_text(encoding="utf-8")
+    assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8") == "owner-secret"
+    assert not list((tmp_path / "memory").glob("*.md"))
+
+
+def test_scoped_search_passes_backend_scope_and_safe_empty_hint(tmp_path):
+    from agent.tools.memory.memory_search import MemorySearchTool
+    calls = []
+
+    async def search(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    tool = MemorySearchTool(SimpleNamespace(search=search))
+    agent = SimpleNamespace(tools=[tool], workspace_dir=str(tmp_path))
+    who = identity()
+    attach_identity(agent, who)
+    result = tool.execute({"query": "secret", "user_id": "someone-else", "include_shared": True})
+    assert result.status == "success"
+    assert calls[0]["user_id"] == who["memory_scope"]
+    assert calls[0]["include_shared"] is False
+    assert f"memory/users/{who['memory_scope']}/MEMORY.md" in result.result
+    assert "writing to MEMORY.md" not in result.result
+
+
+def test_scoped_prompt_failure_never_returns_cached_owner_prompt(tmp_path, monkeypatch):
+    from agent.protocol.agent import Agent
+    agent = Agent("cached-owner-secret", tools=[], workspace_dir=str(tmp_path), enable_skills=False)
+    attach_identity(agent, identity())
+
+    def fail(*args, **kwargs):
+        raise OSError("profile unreadable")
+
+    monkeypatch.setattr("agent.memory.identity.read_profile", fail)
+    with pytest.raises(RuntimeError, match="Cannot safely build platform identity prompt"):
+        agent.get_full_system_prompt()
+
+
+def test_bridge_prepersist_keeps_author_and_original_display(tmp_path):
+    from agent.memory.conversation_store import ConversationStore
+    from bridge.agent_bridge import AgentBridge
+    from bridge.context import Context, ContextType
+    store = ConversationStore(tmp_path / "conversations.db")
+    bridge = object.__new__(AgentBridge)
+    bridge.get_conversation_store = lambda agent_id=None: store
+    who = identity()
+    context = Context(ContextType.TEXT, "我是小王", {
+        "session_id": "group", "channel_type": "feishu", "sender_identity": who,
+    })
+    assert bridge._pre_persist_user_message("group", "我是小王", context=context, clear_history=False)
+    restored = store.load_messages("group", with_authors=True)
+    assert restored[0]["content"][0]["text"] == attributed_query("我是小王", who)
+    # Model restore intentionally strips extras; verify the durable metadata separately.
+    import json
+    import sqlite3
+    with sqlite3.connect(tmp_path / "conversations.db") as conn:
+        extras = json.loads(conn.execute("SELECT extras FROM messages WHERE role = 'user'").fetchone()[0])
+    assert extras["sender_identity"]["sender_id"] == "ou_a"
+    assert extras["display"] == "我是小王"
+
+
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("eager_failure", [False, True])
+def test_bridge_binds_each_speaker_and_persists_fallback(tmp_path, monkeypatch, shared, eager_failure):
+    import threading
+    from agent.memory.conversation_store import ConversationStore
+    from agent.registry import AgentRegistry
+    from bridge.agent_bridge import AgentBridge
+    from bridge.context import Context, ContextType
+    from test_incremental_persist import _ScriptedAgent, _Script, _STEPS
+
+    store = ConversationStore(tmp_path / "conversations.db")
+    bridge = object.__new__(AgentBridge)
+    bridge.agent_registry = AgentRegistry.from_config({
+        "default_agent_id": "primary",
+        "agents": [{"id": "primary", "name": "Primary", "workspace": str(tmp_path)}],
+    })
+    bridge._agent_instances = {}
+    bridge._agents_lock = threading.RLock()
+    bridge.get_conversation_store = lambda agent_id=None: store
+    bridge.route_context = lambda context: "primary"
+    bridge._seed_team_members = lambda *a, **k: None
+    bridge._schedule_mcp_hot_reload = lambda *a, **k: None
+    monkeypatch.setattr("agent.evolution.trigger.note_user_turn", lambda *a, **k: None)
+    monkeypatch.setattr("agent.evolution.trigger.mark_run_active", lambda *a, **k: None)
+    agent = _ScriptedAgent(_Script(_STEPS))
+    agent.workspace_dir = str(tmp_path)
+    bridge.get_agent = lambda **kwargs: agent
+    if eager_failure:
+        bridge._pre_persist_user_message = lambda *a, **k: False
+
+    for sender in ("ou_a", "ou_b"):
+        session = "oc_one" if shared else f"{sender}:oc_one"
+        msg = SimpleNamespace(actual_user_id=sender, identity_app_id="cli_app", is_group=True,
+                              other_user_id="oc_one", actual_user_nickname="同名", msg_id=f"om_{sender}")
+        context = Context(ContextType.TEXT, "记住我", {
+            "session_id": session, "channel_type": "feishu", "msg": msg,
+        })
+        reply = bridge.agent_reply("记住我", context=context)
+        assert reply.type.name == "TEXT"
+        assert agent._sender_identity["sender_id"] == sender
+        assert agent._current_user_id == identity()["memory_scope"]
+        profile = next(t for t in agent.tools if t.name == "member_profile")
+        assert profile.identity["current_text"] == "记住我"
+        rows = store.load_messages(session, max_turns=100)
+        user_rows = [m for m in rows if m["content"][0].get("type") == "text" and m["role"] == "user"]
+        assert f'"sender_id": "{sender}"' in user_rows[-1]["content"][0]["text"]

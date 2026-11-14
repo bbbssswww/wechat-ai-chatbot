@@ -83,16 +83,20 @@ class MemorySearchTool(BaseTool):
                 user_id=self.user_id,
                 max_results=max_results,
                 min_score=min_score,
-                include_shared=True
+                include_shared=getattr(self, "include_shared", True)
             ))
             
             if not results:
                 # Return clear message that no memories exist yet
                 # This prevents infinite retry loops
+                target = (f"memory/users/{self.user_id}/MEMORY.md or "
+                          f"memory/users/{self.user_id}/YYYY-MM-DD.md"
+                          if self.user_id and not getattr(self, "include_shared", True)
+                          else "MEMORY.md or memory/YYYY-MM-DD.md")
                 return ToolResult.success(
                     f"No memories found for '{query}'. "
                     f"This is normal if no memories have been stored yet. "
-                    f"You can store new memories by writing to MEMORY.md or memory/YYYY-MM-DD.md files."
+                    f"You can store new memories by writing to {target}."
                 )
             
             # Format results

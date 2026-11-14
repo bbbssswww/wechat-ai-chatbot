@@ -129,6 +129,12 @@ class MemoryGetTool(BaseTool):
             if not any(_contained(real_file, root) for root in allowed_roots):
                 return ToolResult.fail("Error: Access denied: path outside workspace")
             
+            scope = getattr(self, "allowed_memory_scope", None)
+            if scope:
+                scoped_root = workspace_dir / "memory" / "users" / scope
+                if not _contained(real_file, scoped_root):
+                    return ToolResult.fail("Error: Access denied: memory outside current conversation scope")
+
             if is_credential_path(str(file_path)):
                 return ToolResult.fail(DENIED_MESSAGE)
 
