@@ -1,6 +1,7 @@
 """Offline identity/profile regression coverage; no Feishu API or LLM needed."""
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import PurePath
 
 import pytest
 
@@ -31,6 +32,15 @@ def test_profile_keys_split_people_apps_groups_and_private(tmp_path):
     assert len({profile_path(tmp_path, x) for x in variants}) == len(variants)
     assert identity()["memory_scope"] == identity(sender="ou_b")["memory_scope"]
     assert identity()["memory_scope"] != identity(group="oc_two")["memory_scope"]
+
+
+def test_profile_path_works_without_is_relative_to(tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.delattr(PurePath, "is_relative_to", raising=False)
+        path = profile_path(tmp_path, identity())
+
+    assert path.relative_to(tmp_path.resolve()).parts[:2] == ("people", "feishu")
+    assert path.name == "USER.md"
 
 
 def test_self_profile_evidence_and_clear(tmp_path):

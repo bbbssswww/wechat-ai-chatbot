@@ -45,7 +45,8 @@ def profile_path(workspace, identity):
     root = Path(workspace).resolve()
     path = root / "people" / "feishu" / _key(identity["app_id"], identity["tenant_key"]) / identity["person_key"] / context / "USER.md"
     # Reject symlink/junction escapes as well as lexical traversal.
-    if not path.resolve().is_relative_to(root):
+    resolved_path = path.resolve()
+    if resolved_path != root and root not in resolved_path.parents:
         raise ValueError("Profile path outside workspace")
     return path
 
