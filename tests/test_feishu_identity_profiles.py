@@ -2,7 +2,9 @@
 import re
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import PurePath
+from threading import Lock
 
 import pytest
 
@@ -211,6 +213,92 @@ def test_scoped_search_passes_backend_scope_and_safe_empty_hint(tmp_path):
     assert calls[0]["include_shared"] is False
     assert f"memory/users/{who['memory_scope']}/MEMORY.md" in result.result
     assert "writing to MEMORY.md" not in result.result
+
+
+class _NightlyMemoryModel:
+    def __init__(self):
+        self.dreams = []
+
+    def call(self, request):
+        markers = sorted(set(re.findall(r"nightly-[a-z-]+", request.messages[0]["content"])))
+        content = "\n".join(f"- {marker}" for marker in markers)
+        if "[DREAM]" in request.system:
+            self.dreams.append(markers)
+            content = f"[MEMORY]\n{content}\n[DREAM]\n{content}"
+        return {"choices": [{"message": {"content": content}}]}
+
+
+def test_nightly_feishu_summaries_and_dreams_keep_their_scope(tmp_path, monkeypatch):
+    import agent.memory
+    from agent.memory.conversation_store import ConversationStore
+    from agent.memory.summarizer import MemoryFlushManager
+    from bridge.agent_initializer import AgentInitializer
+    from config import conf
+
+    monkeypatch.setitem(conf(), "deep_dream_enabled", True)
+    monkeypatch.setitem(conf(), "conversation_persistence", True)
+    store = ConversationStore(tmp_path / "conversations.db")
+    monkeypatch.setattr(agent.memory, "get_conversation_store", lambda _: store)
+    model = _NightlyMemoryModel()
+    sessions = []
+    initializer = AgentInitializer(None, SimpleNamespace(iter_agent_instances=lambda: iter(sessions)))
+    group_sender = identity(owner="ou_a")
+    private_sender = identity(sender="ou_b", group="", owner="ou_a")
+    cases = [
+        ("nightly-owner-direct", identity(group="", owner="ou_a")),
+        ("nightly-owner-group", group_sender),
+        ("nightly-member-group", identity(sender="ou_b", owner="ou_a")),
+        ("nightly-member-direct", private_sender),
+        ("nightly-restored-unbound", None),
+    ]
+    for marker, sender in cases:
+        runtime = SimpleNamespace(
+            agent_id="pony", workspace_dir=str(tmp_path), tools=[], messages_lock=Lock(), messages=[],
+            memory_manager=SimpleNamespace(flush_manager=MemoryFlushManager(tmp_path, model)),
+        )
+        message = {"role": "user", "content": [{"type": "text", "text": marker}]}
+        if sender:
+            attach_identity(runtime, sender)
+            runtime.messages = [message]
+        else:
+            store.append_messages(marker, [message], channel_type="feishu")
+            initializer._restore_conversation_history(runtime, marker)
+            assert runtime.messages
+        sessions.append((runtime.agent_id, marker, runtime))
+
+    initializer._flush_all_agents()
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    group_dir = tmp_path / "memory" / "users" / group_sender["memory_scope"]
+    private_dir = tmp_path / "memory" / "users" / private_sender["memory_scope"]
+    outputs = {
+        (tmp_path / "MEMORY.md", tmp_path / "memory"): ["nightly-owner-direct"],
+        (group_dir / "MEMORY.md", group_dir): ["nightly-member-group", "nightly-owner-group"],
+        (private_dir / "MEMORY.md", private_dir): ["nightly-member-direct"],
+    }
+    for (main_file, daily_dir), expected in outputs.items():
+        for path in (main_file, daily_dir / f"{today}.md", daily_dir / "dreams" / f"{today}.md"):
+            markers = sorted(re.findall(r"nightly-[a-z-]+", path.read_text(encoding="utf-8")))
+            assert markers == expected, path
+    assert sorted(model.dreams) == sorted(outputs.values())
+
+
+def test_nightly_dedup_tracks_identical_content_in_each_scope(tmp_path, monkeypatch):
+    from agent.memory.summarizer import MemoryFlushManager
+    from config import conf
+
+    monkeypatch.setitem(conf(), "deep_dream_enabled", True)
+    manager = MemoryFlushManager(tmp_path, _NightlyMemoryModel())
+    messages = [{"role": "user", "content": "nightly-identical-content"}]
+    scopes = (None, identity()["memory_scope"], identity(group="")["memory_scope"])
+    for scope in scopes:
+        assert manager.create_daily_summary(messages, user_id=scope)
+        manager._last_flush_thread.join(timeout=5)
+        assert not manager._last_flush_thread.is_alive()
+        assert manager.deep_dream(user_id=scope)
+    for scope in scopes:
+        assert not manager.create_daily_summary(messages, user_id=scope)
+        assert not manager.deep_dream(user_id=scope)
 
 
 def test_scoped_prompt_failure_never_returns_cached_owner_prompt(tmp_path, monkeypatch):
