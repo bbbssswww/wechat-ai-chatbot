@@ -9,6 +9,7 @@ from agent.memory.identity import (
     feishu_identity, profile_path, attributed_query, attach_identity, identity_prompt,
 )
 from agent.tools.memory.member_profile import MemberProfileTool
+from common import i18n
 
 
 def identity(sender="ou_a", group="oc_one", app="cli_app", owner=""):
@@ -83,14 +84,27 @@ def test_bind_replaces_scope_each_turn(tmp_path):
     assert not any(t.name == "member_profile" for t in agent.tools)
 
 
-def test_missing_identity_fails_closed(tmp_path):
+def test_missing_identity_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(i18n, "get_language", lambda: "en")
     with pytest.raises(ValueError):
         profile_path(tmp_path, identity(sender=""))
-    assert "暂无档案" in identity_prompt(tmp_path, identity(sender=""))
+    assert "No profile is available." in identity_prompt(tmp_path, identity(sender=""))
 
 
-def test_scoped_prompt_does_not_load_owner_files(tmp_path):
+@pytest.mark.parametrize(
+    "language, identity_heading, scope_guidance, owner_guidance",
+    [
+        ("en", "Platform identity and profile boundaries", "For this turn, use only memory under",
+         "In a direct chat with the configured owner"),
+        ("zh", "身份与档案边界", "本轮覆盖默认记忆路径", "已绑定主人私聊"),
+        ("zh-Hant", "檔案邊界", "本輪覆蓋預設記憶路徑", "可以使用根 USER.md 和 MEMORY.md"),
+    ],
+)
+def test_scoped_prompt_does_not_load_owner_files(
+    tmp_path, monkeypatch, language, identity_heading, scope_guidance, owner_guidance,
+):
     from agent.protocol.agent import Agent
+    monkeypatch.setattr(i18n, "get_language", lambda: language)
     (tmp_path / "USER.md").write_text("owner-secret-user", encoding="utf-8")
     (tmp_path / "MEMORY.md").write_text("owner-secret-memory", encoding="utf-8")
     (tmp_path / "AGENT.md").write_text("Helpful group assistant", encoding="utf-8")
@@ -100,10 +114,17 @@ def test_scoped_prompt_does_not_load_owner_files(tmp_path):
     assert "owner-secret-user" not in prompt
     assert "owner-secret-memory" not in prompt
     assert '"sender_id": "ou_a"' in prompt
+    assert identity_heading in prompt
+    assert scope_guidance in prompt
+    assert f"memory/users/{identity()['memory_scope']}/MEMORY.md" in prompt
+    assert owner_guidance not in prompt
     attach_identity(agent, identity(group="", owner="ou_a"))
     prompt = agent.get_full_system_prompt()
     assert "owner-secret-user" in prompt
     assert "owner-secret-memory" in prompt
+    assert identity_heading in prompt
+    assert owner_guidance in prompt
+    assert scope_guidance not in prompt
 
 
 def test_memory_get_denies_other_scope(tmp_path):

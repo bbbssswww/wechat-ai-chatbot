@@ -4,6 +4,7 @@ import re
 import time
 import threading
 
+from common import i18n
 from common.log import logger
 
 
@@ -338,7 +339,6 @@ class Agent:
                     context_files = load_context_files(self.workspace_dir)
 
             try:
-                from common import i18n
                 lang = i18n.get_language()
             except Exception:
                 lang = "zh"
@@ -361,11 +361,19 @@ class Agent:
                 from agent.memory.identity import identity_prompt
                 full += "\n\n" + identity_prompt(self.workspace_dir, identity)
                 if not identity["legacy_private"]:
-                    scope = identity["memory_scope"]
-                    full += (f"\n本轮覆盖默认记忆路径：只允许使用 memory/users/{scope}/ 下的记忆。"
-                             "过往事件必须先 memory_search，再 memory_get，检索无结果就说明不知道，禁止回退到根记忆。"
-                             f"群/当前场景长期记忆可写 memory/users/{scope}/MEMORY.md，每日记忆用同目录 YYYY-MM-DD.md。"
-                             "不要使用根 MEMORY.md 或根 daily 记忆；member_profile 是更新本人档案的入口。")
+                    full += "\n" + i18n.t(
+                        "本轮覆盖默认记忆路径：只允许使用 {memory_dir}/ 下的记忆。"
+                        "过往事件必须先 memory_search，再 memory_get，检索无结果就说明不知道，禁止回退到根记忆。"
+                        "群/当前场景长期记忆可写 {memory_dir}/MEMORY.md，每日记忆用同目录 YYYY-MM-DD.md。"
+                        "不要使用根 MEMORY.md 或根 daily 记忆；member_profile 是更新本人档案的入口。",
+                        "For this turn, use only memory under {memory_dir}/. "
+                        "For past events, call memory_search before memory_get. "
+                        "If the search returns nothing, say you don't know. Do not fall back to root memory. "
+                        "When writing long-term memory, use {memory_dir}/MEMORY.md. "
+                        "For daily memory, use YYYY-MM-DD.md in the same directory. "
+                        "Do not use the root MEMORY.md or root daily memory files. "
+                        "Use member_profile to update the current sender's profile.",
+                    ).format(memory_dir=f"memory/users/{identity['memory_scope']}")
             if self.extra_system_suffix:
                 full = f"{full}\n\n{self.extra_system_suffix}"
             return full
