@@ -150,13 +150,13 @@ def test_bind_replaces_scope_each_turn(tmp_path):
     get = SimpleNamespace(name="memory_get")
     agent = SimpleNamespace(tools=[search, get], workspace_dir=str(tmp_path))
     attach_identity(agent, identity())
-    assert not search.include_shared
+    assert not search.include_shared and search.include_knowledge
     assert search.user_id == identity()["memory_scope"]
     assert get.allowed_memory_scope == search.user_id
     attach_identity(agent, identity(sender="ou_b"))
     assert len([t for t in agent.tools if t.name == "member_profile"]) == 1
     attach_identity(agent, None)
-    assert search.include_shared and search.user_id is None
+    assert search.include_shared and not search.include_knowledge and search.user_id is None
     assert get.allowed_memory_scope is None
     assert not any(t.name == "member_profile" for t in agent.tools)
 
@@ -285,8 +285,92 @@ def test_scoped_search_passes_backend_scope_and_safe_empty_hint(tmp_path):
     assert result.status == "success"
     assert calls[0]["user_id"] == who["memory_scope"]
     assert calls[0]["include_shared"] is False
+    assert calls[0]["include_knowledge"] is True
     assert f"memory/users/{who['memory_scope']}/MEMORY.md" in result.result
     assert "writing to MEMORY.md" not in result.result
+
+
+@pytest.mark.parametrize("group", ["oc_one", ""], ids=["group", "non-owner-direct"])
+@pytest.mark.parametrize("engine", ["fts5", "trigram", "like", "vector"])
+def test_scoped_memory_tools_share_knowledge_only(tmp_path, monkeypatch, group, engine):
+    import asyncio
+    from agent.memory.config import MemoryConfig
+    from agent.memory.manager import MemoryManager
+    from agent.tools.memory.memory_get import MemoryGetTool
+    from agent.tools.memory.memory_search import MemorySearchTool
+    from config import conf
+
+    monkeypatch.setitem(conf(), "knowledge", True)
+    workspace = tmp_path / "agent"
+    shared = tmp_path / "shared"
+    knowledge = shared / "knowledge" / "guide.md"
+    knowledge.parent.mkdir(parents=True)
+    monkeypatch.setattr("common.state_dir.shared_root", lambda: shared)
+
+    who = identity(group=group)
+    own_note = f"memory/users/{who['memory_scope']}/MEMORY.md"
+    other_scope = identity(sender="ou_b", group="oc_two" if group else "")["memory_scope"]
+    private_notes = {
+        "MEMORY.md": "root-secret",
+        "memory/2026-11-14.md": "daily-secret",
+        f"memory/users/{other_scope}/MEMORY.md": "other-secret",
+    }
+    query = "工作区指南" if engine == "trigram" else "workspaceguide"
+    for relative, text in {**private_notes, own_note: "session-fact"}.items():
+        path = workspace / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{query} {text}\n", encoding="utf-8")
+    knowledge.write_text(f"{query} shared-fact\n", encoding="utf-8")
+
+    embedding = None
+    if engine == "vector":
+        embedding = SimpleNamespace(
+            embed_query=lambda _: [1.0, 0.0],
+            embed_batch=lambda texts: [[1.0, 0.0] for _ in texts],
+        )
+    manager = MemoryManager(MemoryConfig(workspace_root=str(workspace)), embedding_provider=embedding)
+    try:
+        asyncio.run(manager.sync())
+        storage = manager.storage
+        if engine == "vector":
+            monkeypatch.setattr(storage, "search_keyword", lambda **_: [])
+        elif engine == "like":
+            monkeypatch.setattr(storage, "fts5_available", False)
+            monkeypatch.setattr(storage, "trigram_fts5_available", False)
+        else:
+            available = storage.fts5_available if engine == "fts5" else storage.trigram_fts5_available
+            if not available:
+                pytest.skip(f"SQLite lacks {engine} support")
+            if engine == "fts5":
+                monkeypatch.setattr(storage, "trigram_fts5_available", False)
+            monkeypatch.setattr(storage, "_search_like", lambda *_: pytest.fail(f"{engine} fell back to LIKE"))
+
+        search = MemorySearchTool(manager)
+        get = MemoryGetTool(manager)
+        attach_identity(SimpleNamespace(tools=[search, get], workspace_dir=str(workspace)), who)
+
+        result = search.execute({"query": query, "min_score": 0})
+        assert result.status == "success", result.result
+        assert "Found 2 relevant memories" in result.result
+        assert "knowledge/guide.md" in result.result
+        assert own_note in result.result
+        for path, secret in private_notes.items():
+            assert secret not in result.result
+            assert get.execute({"path": path}).status == "error"
+
+        for path, fact in [("knowledge/guide.md", "shared-fact"), (own_note, "session-fact")]:
+            result = get.execute({"path": path})
+            assert result.status == "success", result.result
+            assert fact in result.result
+
+        monkeypatch.setitem(conf(), "knowledge", False)
+        result = search.execute({"query": query, "min_score": 0})
+        assert result.status == "success", result.result
+        assert "Found 1 relevant memories" in result.result
+        assert own_note in result.result and "shared-fact" not in result.result
+        assert get.execute({"path": "knowledge/guide.md"}).status == "error"
+    finally:
+        manager.close()
 
 
 class _NightlyMemoryModel:

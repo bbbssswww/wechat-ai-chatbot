@@ -83,7 +83,8 @@ class MemorySearchTool(BaseTool):
                 user_id=self.user_id,
                 max_results=max_results,
                 min_score=min_score,
-                include_shared=getattr(self, "include_shared", True)
+                include_shared=getattr(self, "include_shared", True),
+                include_knowledge=getattr(self, "include_knowledge", False),
             ))
             
             if not results:

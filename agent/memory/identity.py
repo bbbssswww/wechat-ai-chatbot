@@ -127,6 +127,7 @@ def attach_identity(agent, identity):
         if tool.name == "memory_search":
             tool.user_id = agent._current_user_id
             tool.include_shared = not scoped
+            tool.include_knowledge = scoped
         elif tool.name == "memory_get":
             tool.allowed_memory_scope = agent._current_user_id
     if scoped and identity["valid"] and agent.workspace_dir:
