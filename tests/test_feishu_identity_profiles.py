@@ -1,4 +1,5 @@
 """Offline identity/profile regression coverage; no Feishu API or LLM needed."""
+import re
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import PurePath
@@ -91,6 +92,14 @@ def test_missing_identity_fails_closed(tmp_path, monkeypatch):
     assert "No profile is available." in identity_prompt(tmp_path, identity(sender=""))
 
 
+def _listed_workspace_files(prompt):
+    prefixes = ("- ✅ `", "**Files already auto-loaded**", "**已自动加载的文件**")
+    notice_lines = [line for line in prompt.splitlines() if line.startswith(prefixes)]
+    return re.findall(r"`([^`]+\.md)`", "\n".join(notice_lines))
+
+
+@pytest.mark.parametrize("use_project_dir", [False, True], ids=["workspace", "project"])
+@pytest.mark.parametrize("group", ["oc_one", ""], ids=["group", "non-owner-direct"])
 @pytest.mark.parametrize(
     "language, identity_heading, scope_guidance, owner_guidance",
     [
@@ -102,22 +111,30 @@ def test_missing_identity_fails_closed(tmp_path, monkeypatch):
 )
 def test_scoped_prompt_does_not_load_owner_files(
     tmp_path, monkeypatch, language, identity_heading, scope_guidance, owner_guidance,
+    use_project_dir, group,
 ):
     from agent.protocol.agent import Agent
     monkeypatch.setattr(i18n, "get_language", lambda: language)
     (tmp_path / "USER.md").write_text("owner-secret-user", encoding="utf-8")
     (tmp_path / "MEMORY.md").write_text("owner-secret-memory", encoding="utf-8")
     (tmp_path / "AGENT.md").write_text("Helpful group assistant", encoding="utf-8")
+    (tmp_path / "RULE.md").write_text("Follow the workspace rules", encoding="utf-8")
     agent = Agent("cached-owner-secret", tools=[], workspace_dir=str(tmp_path), enable_skills=False)
-    attach_identity(agent, identity())
+    if use_project_dir:
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        agent.apply_project_dir(str(project_dir))
+    sender = identity(group=group)
+    attach_identity(agent, sender)
     prompt = agent.get_full_system_prompt()
     assert "owner-secret-user" not in prompt
     assert "owner-secret-memory" not in prompt
     assert '"sender_id": "ou_a"' in prompt
     assert identity_heading in prompt
     assert scope_guidance in prompt
-    assert f"memory/users/{identity()['memory_scope']}/MEMORY.md" in prompt
+    assert f"memory/users/{sender['memory_scope']}/MEMORY.md" in prompt
     assert owner_guidance not in prompt
+    assert _listed_workspace_files(prompt) == ["AGENT.md", "RULE.md"]
     attach_identity(agent, identity(group="", owner="ou_a"))
     prompt = agent.get_full_system_prompt()
     assert "owner-secret-user" in prompt
@@ -125,6 +142,7 @@ def test_scoped_prompt_does_not_load_owner_files(
     assert identity_heading in prompt
     assert owner_guidance in prompt
     assert scope_guidance not in prompt
+    assert _listed_workspace_files(prompt) == ["AGENT.md", "USER.md", "RULE.md", "MEMORY.md"]
 
 
 def test_memory_get_denies_other_scope(tmp_path):
