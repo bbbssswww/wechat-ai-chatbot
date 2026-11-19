@@ -777,7 +777,7 @@ def _build_workspace_section(
         if context_paths:
             file_notes = {
                 "AGENT.md": "- ✅ `AGENT.md`: loaded - your persona and soul; follow it strictly. When your name, personality or style changes, proactively `edit` this file",
-                "USER.md": "- ✅ `USER.md`: loaded - private user profile. Platform identity rules override this: use the selected member profile and its update tool, never rewrite the owner's profile.",
+                "USER.md": "- ✅ `USER.md`: loaded - private user profile. Use `edit` to update the relevant details when the user changes their name or preferred form of address.",
                 "RULE.md": "- ✅ `RULE.md`: loaded - workspace guide and rules; follow them strictly",
                 "MEMORY.md": "- ✅ `MEMORY.md`: loaded - long-term memory index",
             }
@@ -823,7 +823,7 @@ def _build_workspace_section(
         if context_paths:
             file_notes = {
                 "AGENT.md": "- ✅ `AGENT.md`: 已加载 - 你的人格和灵魂设定，请严格遵循。当你的名字、性格或交流风格发生变化时，主动用 `edit` 更新此文件",
-                "USER.md": "- ✅ `USER.md`: 已加载 - 私人用户档案。存在平台身份边界时，以其选定的成员档案和更新入口为准，不得改写主人的档案。",
+                "USER.md": "- ✅ `USER.md`: 已加载 - 私人用户档案。当用户修改姓名或称呼时，用 `edit` 更新对应内容。",
                 "RULE.md": "- ✅ `RULE.md`: 已加载 - 工作空间使用指南和规则，请严格遵循",
                 "MEMORY.md": "- ✅ `MEMORY.md`: 已加载 - 长期记忆索引",
             }

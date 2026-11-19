@@ -60,6 +60,80 @@ def test_self_profile_evidence_and_clear(tmp_path):
     assert tool.execute({"action": "view"}).result == "No profile yet."
 
 
+@pytest.mark.parametrize(
+    "sender, group, use_root_profile",
+    [
+        ("ou_a", "", True),
+        ("ou_a", "oc_one", False),
+        ("ou_b", "oc_one", False),
+        ("ou_b", "", False),
+    ],
+    ids=["owner-direct", "owner-group", "member-group", "member-direct"],
+)
+def test_feishu_profile_reads_and_updates_the_correct_file(
+    tmp_path, monkeypatch, sender, group, use_root_profile,
+):
+    from agent.protocol.agent import Agent
+    from agent.tools.edit.edit import Edit
+
+    monkeypatch.setattr(i18n, "get_language", lambda: "en")
+    root_profile = tmp_path / "USER.md"
+    root_contents = "Name: Root Li\nTimezone: UTC+8\n"
+    root_profile.write_text(root_contents, encoding="utf-8")
+    # A pre-change owner private profile has the same path as the per-member
+    # private profile for the same sender without an owner binding.
+    old_profile = profile_path(tmp_path, identity(group=""))
+    old_profile.parent.mkdir(parents=True)
+    old_contents = "Name: Archived Chen\n"
+    old_profile.write_text(old_contents, encoding="utf-8")
+
+    who = identity(sender=sender, group=group, owner="ou_a")
+    current_profile = root_profile if use_root_profile else profile_path(tmp_path, who)
+    if not use_root_profile:
+        current_profile.parent.mkdir(parents=True, exist_ok=True)
+        current_profile.write_text("Name: Current Member\n", encoding="utf-8")
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project_profile = project_dir / "USER.md"
+    project_profile.write_text("Name: Project Decoy\n", encoding="utf-8")
+    edit = Edit()
+    agent = Agent("base", tools=[edit], workspace_dir=str(tmp_path), enable_skills=False)
+    agent.apply_project_dir(str(project_dir))
+    attach_identity(agent, who)
+
+    prompt = agent.get_full_system_prompt()
+    assert "Archived Chen" not in prompt
+    assert "Project Decoy" not in prompt
+    member_tools = [tool for tool in agent.tools if tool.name == "member_profile"]
+    if use_root_profile:
+        assert prompt.count("Name: Root Li") == 1
+        assert f"use edit to update the relevant details in the workspace profile at `{root_profile.resolve()}`" in prompt
+        assert not member_tools
+        result = edit.execute({
+            "path": str(root_profile.resolve()),
+            "oldText": "Name: Root Li",
+            "newText": "Name: Updated Name",
+        })
+        assert result.status == "success", result.result
+        assert root_profile.read_text(encoding="utf-8") == "Name: Updated Name\nTimezone: UTC+8\n"
+    else:
+        assert "Root Li" not in prompt
+        assert "Current Member" in prompt
+        [member_tool] = member_tools
+        member_tool.identity["current_text"] = "Call me Updated Name"
+        result = member_tool.execute({
+            "action": "update", "content": "Name: Updated Name", "evidence": "Call me Updated Name",
+        })
+        assert result.status == "success", result.result
+        assert root_profile.read_text(encoding="utf-8") == root_contents
+
+    assert "Name: Updated Name" in current_profile.read_text(encoding="utf-8")
+    assert "Name: Updated Name" in agent.get_full_system_prompt()
+    assert old_profile.read_text(encoding="utf-8") == old_contents
+    assert project_profile.read_text(encoding="utf-8") == "Name: Project Decoy\n"
+
+
 def test_parallel_profile_writes_are_complete(tmp_path):
     who = identity()
     who["current_text"] = "记住我"

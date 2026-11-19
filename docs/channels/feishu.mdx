@@ -125,7 +125,7 @@ To keep using the workspace's private `USER.md` and `MEMORY.md` in the owner's F
 
 - **Group chats** share memory within each group, even with shared sessions disabled. Each sender has a separate Markdown profile in that group. Group chats skip the workspace's root `USER.md`, `MEMORY.md`, and `BOOTSTRAP.md`.
 - **Non-owner direct chats** use a private profile and memory for that sender. In both group chats and non-owner direct chats, memory search, reads, and automatic summaries use the current chat's scope.
-- **Profile updates** use `member_profile`, which acts on the current sender's profile for the current chat. Messages without an existing sender label stay unattributed. Use a new session if you want to start without earlier conversation context.
+- **Profile updates** in the owner's direct chat use the workspace's root `USER.md`. Any previous Feishu private profile for the owner is kept for manual review. Group chats and non-owner direct chats use `member_profile` to update the current sender's profile for that chat. Messages without an existing sender label stay unattributed. Use a new session if you want to start without earlier conversation context.
 
 <Note>
   These boundaries apply to prompt construction, the member profile and memory tools, and automatic summaries. File, command, and other tools with workspace-wide permissions can still access private data. For untrusted group members, use a separate workspace with restricted tools and permissions.
