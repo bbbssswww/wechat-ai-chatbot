@@ -297,3 +297,40 @@ def test_registration_binds_scanner_at_most_once_and_retries_disk_failures(monke
     assert instance.credentials["feishu_app_id"] == "cli_new"
     assert poll(registration_id) == result
     assert len(team.read(settings)["channel_instances"]) == 1
+
+
+def test_registration_save_conflict_clears_credentials_and_stops_retrying(monkeypatch, tmp_path):
+    from channel import channel_instances
+
+    handler = channels_api.FeishuRegisterHandler
+    settings = {"agent_workspace": str(tmp_path)}
+    _seed_roster(settings, _bot("bot", "cli_old", feishu_app_secret="old-secret"))
+    monkeypatch.setattr(handler, "_state", {
+        "status": "done",
+        "registration_id": "scan",
+        "expires_at": channels_api.time.monotonic() + 60,
+        "cancel_event": channels_api.threading.Event(),
+        "instance_id": "bot",
+        "expected": get_instance(settings, "bot"),
+        "replace": False,
+        "app_id": "cli_other",
+        "app_secret": "scan-secret",
+        "owner_open_id": "ou_scanner",
+    })
+    save = Mock(wraps=save_feishu_registration)
+    monkeypatch.setattr(channel_instances, "save_feishu_registration", save)
+    monkeypatch.setattr(channels_api, "conf", lambda: settings)
+    monkeypatch.setattr(channels_api, "_require_auth", lambda: None)
+    monkeypatch.setattr(channels_api.web, "header", lambda *args: None)
+    monkeypatch.setattr(channels_api.web, "data", lambda: b'{"registration_id":"scan"}')
+
+    result = json.loads(handler().POST())
+    assert result == {
+        "status": "success",
+        "register_status": "error",
+        "message": "The scan returned a different App ID; use Replace app",
+    }
+    assert handler._state["status"] == "error"
+    assert {"app_id", "app_secret", "owner_open_id", "expected"}.isdisjoint(handler._state)
+    assert json.loads(handler().POST()) == result
+    save.assert_called_once()

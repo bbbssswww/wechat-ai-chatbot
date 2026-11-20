@@ -1348,18 +1348,24 @@ class FeishuRegisterHandler:
                         )
                     except OSError:
                         return json.dumps({"status": "success", "register_status": "save_failed"})
-                    payload = {
-                        "status": "success",
-                        "register_status": "done",
-                        "owner_bound": bool(scanner),
-                        "instance_id": instance.instance_id,
-                    }
+                    except ValueError as exc:
+                        status = "error"
+                        result = {"status": status, "error": str(exc)}
+                    else:
+                        payload = {
+                            "status": "success",
+                            "register_status": "done",
+                            "owner_bound": bool(scanner),
+                            "instance_id": instance.instance_id,
+                        }
+                        result = {"status": "saved", "payload": payload}
                     type(self)._state = {key: self._state[key] for key in ("registration_id", "expires_at", "cancel_event")}
-                    self._state.update(status="saved", payload=payload)
-                    mgr = _live_channel_manager()
-                    if mgr:
-                        threading.Thread(target=mgr.add_channel, args=(instance,), daemon=True).start()
-                    return json.dumps(payload)
+                    self._state.update(result)
+                    if result["status"] == "saved":
+                        mgr = _live_channel_manager()
+                        if mgr:
+                            threading.Thread(target=mgr.add_channel, args=(instance,), daemon=True).start()
+                        return json.dumps(payload)
                 if status in ("error", "expired", "denied"):
                     return json.dumps({
                         "status": "success",
