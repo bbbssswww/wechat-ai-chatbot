@@ -141,6 +141,9 @@ class MemoryGetTool(BaseTool):
                 if not allowed:
                     return ToolResult.fail("Error: Access denied: memory outside current conversation scope")
 
+            from agent.memory.identity import permits_memory_path
+            if not permits_memory_path(self, file_path):
+                return ToolResult.fail("Error: Access denied: private memory path")
             if is_credential_path(str(file_path)):
                 return ToolResult.fail(DENIED_MESSAGE)
 

@@ -15,11 +15,12 @@ from agent.tools.memory.member_profile import MemberProfileTool
 from common import i18n
 
 
-def identity(sender="ou_a", group="oc_one", app="cli_app", owner=""):
+def identity(sender="ou_a", group="oc_one", app="cli_app", owner="", shared=False):
     msg = SimpleNamespace(actual_user_id=sender, to_user_id=app,
                           is_group=bool(group), other_user_id=group,
                           actual_user_nickname="同名", msg_id="om_test")
-    return feishu_identity(msg, owner)
+    return feishu_identity(msg, owner_open_ids=[owner] if owner else [],
+                           private_memory_mode="shared" if shared else "owner_workspace")
 
 
 def test_owner_is_explicit_and_private_only():
@@ -219,6 +220,11 @@ def test_scoped_prompt_does_not_load_owner_files(
     assert owner_guidance in prompt
     assert scope_guidance not in prompt
     assert _listed_workspace_files(prompt) == ["AGENT.md", "USER.md", "RULE.md", "MEMORY.md"]
+    attach_identity(agent, identity(sender="ou_b", group="", shared=True))
+    prompt = agent.get_full_system_prompt()
+    assert "owner-secret-user" in prompt
+    assert "owner-secret-memory" in prompt
+    assert scope_guidance not in prompt
 
 
 def test_memory_get_denies_other_scope(tmp_path):
@@ -404,6 +410,8 @@ def test_nightly_feishu_summaries_and_dreams_keep_their_scope(tmp_path, monkeypa
     private_sender = identity(sender="ou_b", group="", owner="ou_a")
     cases = [
         ("nightly-owner-direct", identity(group="", owner="ou_a")),
+        ("nightly-shared-first", identity(group="", shared=True)),
+        ("nightly-shared-second", identity(sender="ou_b", group="", shared=True)),
         ("nightly-owner-group", group_sender),
         ("nightly-member-group", identity(sender="ou_b", owner="ou_a")),
         ("nightly-member-direct", private_sender),
@@ -430,7 +438,9 @@ def test_nightly_feishu_summaries_and_dreams_keep_their_scope(tmp_path, monkeypa
     group_dir = tmp_path / "memory" / "users" / group_sender["memory_scope"]
     private_dir = tmp_path / "memory" / "users" / private_sender["memory_scope"]
     outputs = {
-        (tmp_path / "MEMORY.md", tmp_path / "memory"): ["nightly-owner-direct"],
+        (tmp_path / "MEMORY.md", tmp_path / "memory"): [
+            "nightly-owner-direct", "nightly-shared-first", "nightly-shared-second",
+        ],
         (group_dir / "MEMORY.md", group_dir): ["nightly-member-group", "nightly-owner-group"],
         (private_dir / "MEMORY.md", private_dir): ["nightly-member-direct"],
     }

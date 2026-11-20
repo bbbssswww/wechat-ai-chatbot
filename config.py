@@ -79,7 +79,6 @@ available_setting = {
     "group_name_keyword_white_list": [],  # group-name keywords where auto-reply is enabled
     "group_chat_in_one_session": ["group1"],  # group names that share conversation context
     "group_shared_session": False,  # whether group chat shares conversation context (all members share). When False each user has an independent session in the group
-    "feishu_owner_open_id": "",  # explicit owner binding; empty means no Feishu sender is the owner
     "nick_name_black_list": [],  # user nickname blacklist
     "group_welcome_msg": "",  # fixed welcome message for new group members; uses a random style when empty
     "trigger_by_self": False,  # whether the bot can be triggered by itself
@@ -207,6 +206,7 @@ available_setting = {
     "feishu_app_secret": "",  # Feishu bot app secret
     "feishu_token": "",  # Feishu verification token; only needed in webhook mode
     "feishu_event_mode": "websocket",  # Feishu event mode: webhook(HTTP server) or websocket(long connection)
+    "feishu_private_chat_enabled": True,  # process incoming Feishu direct messages
     # Feishu streaming reply (based on the official cardkit streaming-card API; requires the cardkit:card:write permission and Feishu client 7.20+)
     "feishu_stream_reply": True,  # whether to enable streaming reply (typewriter effect); auto-downgrades to non-streaming or shows an upgrade prompt on failure/old clients
     "feishu_detailed_card": True,  # render normal chat streaming as a detailed card (status header, thinking/tool panels, elapsed time); off keeps the plain typewriter card

@@ -184,3 +184,26 @@ def test_disconnecting_one_of_several_keeps_the_type(monkeypatch, tmp_path):
     on_disk = _json.loads(config_path.read_text(encoding="utf-8"))
     # feishu still has the bootstrapped instance, so its type stays
     assert "feishu" in on_disk["channel_type"]
+
+
+def test_feishu_private_chat_setting_persists_per_bot(monkeypatch, tmp_path):
+    from channel import channel_instances as ci
+
+    cfg, _ = _disconnect_env(monkeypatch, tmp_path)
+    ci.upsert_instance(
+        cfg, "feishu", "feishu-second", agent_id="cust",
+        credentials={"feishu_app_id": "FA2", "feishu_app_secret": "FS2"},
+    )
+
+    key = "feishu_private_chat_enabled"
+    handler = ChannelsHandler()
+    monkeypatch.setattr(handler, "_channel_mgr", lambda: None)
+    response = handler._handle_instance_save("feishu", "feishu-second", {key: False})
+
+    assert json.loads(response)["status"] == "success"
+    assert ci.get_instance(cfg, "feishu-second").credentials[key] is False
+    assert key not in ci.get_instance(cfg, "feishu").credentials
+    cards = {card["instance_id"]: card for card in handler._channel_instances_view()}
+    for instance_id, expected in (("feishu-second", False), ("feishu", True)):
+        field = next(field for field in cards[instance_id]["fields"] if field["key"] == key)
+        assert field["value"] is expected

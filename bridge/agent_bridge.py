@@ -1675,7 +1675,10 @@ class AgentBridge:
             sender_identity = None
             if context.get("channel_type") == "feishu":
                 msg = context.get("msg")
-                sender_identity = feishu_identity(msg, getattr(msg, "identity_owner_open_id", ""))
+                sender_identity = feishu_identity(
+                    msg, owner_open_ids=getattr(msg, "identity_owner_open_ids", ()),
+                    private_memory_mode=getattr(msg, "identity_private_memory_mode", "owner_workspace"),
+                )
                 context["sender_identity"] = sender_identity
                 model_query = attributed_query(model_query, sender_identity)
             attach_identity(agent, sender_identity)
@@ -1690,6 +1693,13 @@ class AgentBridge:
             # Filter tools based on context
             original_tools = agent.tools
             filtered_tools = original_tools
+            if sender_identity and (not sender_identity["legacy_private"] or not sender_identity["is_owner"]):
+                scoped_tools = {
+                    "read", "write", "edit", "send", "vision", "ls", "member_profile",
+                    "memory_search", "memory_get", "web_fetch", "web_search", "current_time",
+                }
+                filtered_tools = [tool for tool in filtered_tools if tool.name in scoped_tools]
+                agent.tools = filtered_tools
             
             # If this is a scheduled task execution, exclude scheduler tool to prevent recursion
             if context and context.get("is_scheduled_task"):

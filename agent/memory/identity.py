@@ -13,7 +13,7 @@ def _key(*parts):
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:32]
 
 
-def feishu_identity(msg, owner_open_id=""):
+def feishu_identity(msg, *, owner_open_ids=(), private_memory_mode="owner_workspace"):
     """Build identity only from a channel-created message, not a model argument."""
     sender = getattr(msg, "actual_user_id", None) or getattr(msg, "from_user_id", "") or ""
     app = getattr(msg, "identity_app_id", "") or getattr(msg, "to_user_id", "") or ""
@@ -21,7 +21,8 @@ def feishu_identity(msg, owner_open_id=""):
     group = bool(getattr(msg, "is_group", False))
     chat = getattr(msg, "other_user_id", "") if group else ""
     valid = bool(sender and app and (chat or not group))
-    owner = bool(valid and owner_open_id and sender == owner_open_id)
+    human = getattr(msg, "identity_sender_type", "user") == "user"
+    owner = valid and human and sender in owner_open_ids
     person = _key("feishu", app, tenant, sender) if valid else "unknown"
     # A shared group's flush belongs to the group, never the latest speaker.
     scope = ("feishu-group-" + _key(app, tenant, chat) if group else "feishu-user-" + person)
@@ -31,7 +32,20 @@ def feishu_identity(msg, owner_open_id=""):
                 display_name=getattr(msg, "actual_user_nickname", "") or "",
                 group_id=chat, message_id=getattr(msg, "msg_id", "") or "",
                 is_group=group, is_owner=owner, valid=valid, person_key=person,
-                memory_scope=scope, legacy_private=owner and not group)
+                memory_scope=scope,
+                legacy_private=valid and human and not group and (
+                    private_memory_mode == "shared" or (private_memory_mode == "owner_workspace" and owner)
+                ))
+
+
+def private_session_id(msg, instance_id):
+    identity = feishu_identity(
+        msg, owner_open_ids=getattr(msg, "identity_owner_open_ids", ()),
+        private_memory_mode=getattr(msg, "identity_private_memory_mode", "owner_workspace"),
+    )
+    access = "workspace" if identity["legacy_private"] else "personal"
+    key = _key(instance_id, identity["app_id"], identity["tenant_key"], identity["memory_scope"], access)
+    return f"feishu-private-{key}"
 
 
 def attributed_query(query, identity):
@@ -44,7 +58,7 @@ def profile_path(workspace, identity):
     if not identity["valid"]:
         raise ValueError("Missing platform identity; profile access disabled")
     if identity["legacy_private"]:
-        raise ValueError("Owner direct chats use the workspace USER.md")
+        raise ValueError("This direct chat uses the workspace USER.md")
     context = "group-" + _key(identity["group_id"]) if identity["is_group"] else "private"
     root = Path(workspace).resolve()
     path = root / "people" / "feishu" / _key(identity["app_id"], identity["tenant_key"]) / identity["person_key"] / context / "USER.md"
@@ -80,6 +94,13 @@ def identity_prompt(workspace, identity):
         # people/feishu/<app-tenant-hash>/<sender-hash>/private/USER.md
         # context_files supplies the workspace root profile.
         root_profile = Path(workspace).resolve() / "USER.md"
+        if not identity["is_owner"]:
+            return identity_section + "\n" + i18n.t(
+                "此飞书机器人启用了私聊共享。可以使用工作区根目录的 USER.md 和 MEMORY.md。"
+                "档案和记忆由此机器人的私聊成员共用，记录个人信息时请注明发言人。",
+                "This Feishu bot shares its root USER.md and MEMORY.md across direct chats. "
+                "Attribute personal information to the correct speaker when recording it.",
+            )
         return identity_section + "\n" + i18n.t(
             "已绑定主人私聊：可以使用根 USER.md 和 MEMORY.md。"
             "主人明确要求更新档案或明确自述时，用 edit 修改工作区档案 `{root_profile}` 中的相关信息。"
@@ -124,6 +145,9 @@ def attach_identity(agent, identity):
     agent._current_user_id = identity["memory_scope"] if scoped else None
     agent.tools = [t for t in agent.tools if t.name != "member_profile"]
     for tool in agent.tools:
+        tool.feishu_restricted = bool(identity and (scoped or not identity["is_owner"]))
+        if tool.name in {"read", "write", "edit", "send", "vision", "ls", "memory_get"}:
+            tool.feishu_memory_scope = (agent.workspace_dir, agent._current_user_id) if identity and agent.workspace_dir else None
         if tool.name == "memory_search":
             tool.user_id = agent._current_user_id
             tool.include_shared = not scoped
@@ -132,3 +156,40 @@ def attach_identity(agent, identity):
             tool.allowed_memory_scope = agent._current_user_id
     if scoped and identity["valid"] and agent.workspace_dir:
         agent.tools.append(MemberProfileTool(agent.workspace_dir, identity))
+
+
+def permits_memory_path(tool, path):
+    """Guard paths after resolving aliases, including junctions and symlinks."""
+    scope = getattr(tool, "feishu_memory_scope", None)
+    if scope is None:
+        return True
+    workspace, user_id = scope
+    root = Path(workspace).resolve()
+    target = Path(path).resolve()
+    protected = ["people", "memory/long-term", "agents/team.json"]
+    if user_id:
+        protected.extend(("USER.md", "MEMORY.md", "BOOTSTRAP.md", "memory"))
+    else:
+        protected.append("memory/users")
+    for name in protected:
+        boundary = (root / name).resolve()
+        if target == boundary or boundary in target.parents:
+            if name == "memory" and user_id:
+                personal = root / "memory" / "users" / user_id
+                return personal.resolve() == personal and (target == personal or personal in target.parents)
+            return False
+    if getattr(tool, "feishu_restricted", False):
+        from common import state_dir
+
+        allowed = [root]
+        if getattr(tool, "cwd", None):
+            allowed.append(Path(tool.cwd).resolve())
+        if tool.name in {"read", "ls", "memory_get"}:
+            allowed.append(state_dir.knowledge_dir(base=root).resolve())
+        if not any(base == target or base in target.parents for base in allowed):
+            return False
+        if target.name.casefold() in {"team.json", "config.json"}:
+            return False
+        if "agents" in target.parts[len(root.parts):] and root in target.parents:
+            return False
+    return True
